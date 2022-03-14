@@ -1,0 +1,27 @@
+{
+    "name": "rhytz/fs-mautic-sync",
+    "description": "Sync Freemius users to Mautic email marketing system",
+    "type": "project",
+    "authors": [
+        {
+            "name": "Rhytz",
+            "email": "ik@koenreus.com"
+        }
+    ],
+    "autoload": {
+        "psr-4": {"FSMauticSync\\": "src/"}
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "FSMauticSync\\Tests\\": "tests/FSMauticSync/"
+        }
+    },
+    "require": {
+        "mautic/api-library": "^2.16",
+        "freemius/php-sdk": "dev-master",
+        "ext-mysqli": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^8"
+    }
+}
