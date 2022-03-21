@@ -4,8 +4,8 @@
     "type": "project",
     "authors": [
         {
-            "name": "Rhytz",
-            "email": "ik@koenreus.com"
+            "name": "koen12344",
+            "email": "koen@koenreus.com"
         }
     ],
     "autoload": {
@@ -17,9 +17,10 @@
         }
     },
     "require": {
-        "mautic/api-library": "^2.16",
+        "mautic/api-library": "^3.0",
         "freemius/php-sdk": "dev-master",
-        "ext-mysqli": "*"
+        "symfony/process": "^5.4",
+        "ext-json": "*"
     },
     "require-dev": {
         "phpunit/phpunit": "^8"
