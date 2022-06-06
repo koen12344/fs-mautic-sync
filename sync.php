@@ -209,10 +209,10 @@ if(get_user_confirmation('Create/sync plugin related custom fields in Mautic?'))
             ]
         ]
     ];
-    foreach($contact_fields as $contact_field){
-        $mautic_contact_fields_api->create($contact_field);
-        echo "Created {$contact_field['label']} contact field\n";
-    }
+
+    $mautic_contact_fields_api->create($contact_fields);
+    echo "Created contact fields\n";
+
 
 
     $plans = $freemius_api->Api("/plugins/{$config['freemius']['plugin_id']}/plans.json");
@@ -236,6 +236,15 @@ if(get_user_confirmation('Create/sync plugin related custom fields in Mautic?'))
             'type'                  => 'number',
             'isPubliclyUpdatable'   => false,
             'isUniqueIdentifier'    => true,
+            'isVisible'             => false,
+            'isShortVisible'        => false,
+        ],
+        [
+            'label'                 => 'Freemius User ID',
+            'alias'                 => 'freemius_user_id',
+            'type'                  => 'number',
+            'isPubliclyUpdatable'   => false,
+            'isUniqueIdentifier'    => false,
             'isVisible'             => false,
             'isShortVisible'        => false,
         ],
@@ -361,6 +370,17 @@ if(get_user_confirmation('Create/sync plugin related custom fields in Mautic?'))
             'defaultValue'          => 'unknown'
         ],
         [
+            'label'                 => 'Trial plan',
+            'alias'                 => 'trial_plan',
+            'type'                  => 'select',
+            'isPubliclyUpdatable'   => false,
+            'isUniqueIdentifier'    => false,
+            'isVisible'             => false,
+            'isShortVisible'        => false,
+            'properties'            => ['list' => $plans_field_values],
+            'defaultValue'          => 'unknown'
+        ],
+        [
             'label'                 => 'Plugin version',
             'alias'                 => 'plugin_version',
             'type'                  => 'text',
@@ -387,17 +407,54 @@ if(get_user_confirmation('Create/sync plugin related custom fields in Mautic?'))
             'isVisible'             => false,
             'isShortVisible'        => false,
         ],
+        [
+            'label'                 => 'In trial',
+            'alias'                 => 'in_trial',
+            'type'                  => 'boolean',
+            'isPubliclyUpdatable'   => false,
+            'isUniqueIdentifier'    => false,
+            'isVisible'             => false,
+            'isShortVisible'        => false,
+            'defaultValue'          => 0,
+            'properties'            => [
+                'no'    => 'No',
+                'yes'    => 'Yes',
+            ]
+        ],
     ];
-    foreach($company_fields as $company_field){
-        $mautic_company_fields_api->create($company_field);
-        echo "Created {$company_field['label']} company field\n";
-    }
 
+    $mautic_company_fields_api->createBatch($company_fields);
+    echo "Created company fields\n";
 }
 
 
 $mautic_contact_api = $mautic_api->newApi('contacts', $auth, $config['mautic']['baseUrl']);
 $mautic_company_api = $mautic_api->newApi('companies', $auth, $config['mautic']['baseUrl']);
+
+if(get_user_confirmation('Delete all existing contacts & companies in Mautic? (Choose wisely!!)')) {
+    $offset = 0;
+    $total = null;
+    do{
+        $contacts = $mautic_contact_api->getList(null, 0, 50);
+        $total = is_null($total) ? $contacts['total'] : $total;
+        $ids = array_keys($contacts['contacts']);
+        echo "Deleting contacts {$offset}/{$total}\n";
+        $mautic_contact_api->deleteBatch($ids);
+        $offset = $offset + 50;
+    }while(count($contacts['contacts']) >= 50);
+
+    $offset = 0;
+    $total = null;
+    do{
+        $companies = $mautic_company_api->getList(null, 0, 50);
+        $total = is_null($total) ? $companies['total'] : $total;
+        $ids = array_keys($companies['companies']);
+        echo "Deleting companies {$offset}/{$total}\n";
+        $mautic_company_api->deleteBatch($ids);
+        $offset = $offset + 50;
+    }while(count($companies['companies']) >= 50);
+
+}
 
 function get_mautic_contact_by_freemius_id($id){
     global $mautic_contact_api;
@@ -425,108 +482,204 @@ function get_mautic_company_by_freemius_id($id){
     return reset($companies);
 }
 
-if(!get_user_confirmation('Sync users from Freemius to Mautic?')){
-    exit;
+if(get_user_confirmation('Sync users from Freemius to Mautic?')) {
+    /**
+     * Loop through all Freemius plugin users
+     */
+    $offset = 0;
+    if(!empty($config['freemius']['contact_offset'])){
+        $saved_offset = (int)$config['freemius']['contact_offset'];
+        if(get_user_confirmation("Continue syncing users from previous offset? ({$saved_offset})")){
+            $offset = $saved_offset;
+        }
+    }
+
+    if(!isset($config['freemius']['created_contacts'])){
+        $config['freemius']['created_contacts'] = [];
+    }
+
+    do{
+        $query = http_build_query([
+            'offset' => $offset,
+            'count' => 50,
+            'fields' =>  'id,email,first,last,is_marketing_allowed,ip,created',
+        ]);
+        $plugin_users = $freemius_api->Api("/plugins/{$plugin_id}/users.json?{$query}", 'GET' );
+
+        $created_contacts = batch_create_mautic_users($plugin_users->users);
+        echo sprintf("Added %d contacts\n", count($created_contacts));
+
+        foreach($created_contacts as $created_contact){
+            $freemius_id = $created_contact['fields']['all']['freemius_id'];
+            $config['freemius']['created_contacts'][$freemius_id] = $created_contact['id'];
+        }
+
+        $offset = $offset + 50;
+        $config['freemius']['contact_offset'] = $offset;
+        save_settings($config);
+    }while(count($plugin_users->users) === 50);
+
+}
+
+
+
+function batch_create_mautic_users($users){
+    global $mautic_contact_api;
+
+    $contacts = [];
+    foreach($users as $user){
+        $contact = [
+            'email'             => $user->email,
+            'ipAddress'         => $user->ip,
+            'firstname'         => $user->first,
+            'lastname'          => $user->last,
+            'freemius_id'       => $user->id,
+        ];
+        if(!$user->is_marketing_allowed){
+            $contact['doNotContact'] = [[
+                'reason'    => 3,
+                'channel'   => 'email',
+            ]];
+        }
+        $contacts[] = $contact;
+    }
+    return $mautic_contact_api->createBatch($contacts)['contacts'];
+}
+
+if(!get_user_confirmation('Sync sites/installs from Freemius to Mautic?')) {
+ exit;
 }
 
 /**
- * Loop through all Freemius plugin users
+ * Loop through all Freemius installs
  */
 $offset = 0;
-if(!empty($config['freemius']['contact_offset'])){
-    $saved_offset = (int)$config['freemius']['contact_offset'];
-    if(get_user_confirmation("Continue syncing users from previous offset? ({$saved_offset})")){
+if(!empty($config['freemius']['install_offset'])){
+    $saved_offset = (int)$config['freemius']['install_offset'];
+    if(get_user_confirmation("Continue syncing installs from previous offset? ({$saved_offset})")){
         $offset = $saved_offset;
     }
 }
 do{
     $query = http_build_query([
         'offset' => $offset,
-        'count' => 25,
-        'fields' =>  'id,email,first,last,is_marketing_allowed,ip,created',
+        'count' => 50,
+        'fields' =>  'id,user_id,url,title,plan_id,is_active,is_uninstalled,version,programming_language_version,platform_version',
     ]);
-    $plugin_users = $freemius_api->Api("/plugins/{$plugin_id}/users.json?{$query}", 'GET' );
-
-    foreach($plugin_users->users as $user){
-        echo "Handling Freemius User {$user->email}\n";
-        $mautic_contact = create_or_update_mautic_contact($user);
-        handle_freemius_sites($user->id, $mautic_contact['id']);
+    $installs = $freemius_api->Api("/plugins/{$plugin_id}/installs.json?{$query}", 'GET');
+    if(!isset($installs->installs) || !$installs->installs){
+        printf($installs);
+        exit;
     }
+    $created_companies = batch_create_mautic_companies($installs->installs);
+    echo sprintf("Added %d companies\n", count($created_companies));
 
-    $offset = $offset + 25;
-    $config['freemius']['contact_offset'] = $offset;
+    $offset = $offset + 50;
+    $config['freemius']['install_offset'] = $offset;
     save_settings($config);
-}while(count($plugin_users->users) === 25);
+}while(count($installs->installs) === 50);
 
 
-function create_or_update_mautic_contact($user){
-    global $mautic_contact_api;
-    $found_contact = get_mautic_contact_by_freemius_id($user->id);
+function batch_create_mautic_companies($installs){
+    global $mautic_company_api, $config;
+    $companies = [];
+    foreach($installs as $install){
+        $companies[] = [
+            'companyname'           => $install->title,
+            'companywebsite'        => $install->url,
+            'plan'                  => $install->plan_id,
+            'freemius_install_id'   => $install->id,
+            'install_state'         => ($install->is_active ? 'activated' : ($install->is_uninstalled ? 'uninstalled' : 'unknown')),
+            'plugin_version'        => $install->version,
+            'wordpress_version'     => $install->platform_version,
+            'php_version'           => $install->programming_language_version,
+            'freemius_user_id'      => $install->user_id,
+        ];
 
-    $data = array(
-        'email'             => $user->email,
-        'ipAddress'         => $user->ip,
-        'firstname'         => $user->first,
-        'lastname'          => $user->last,
-        'freemius_id'       => $user->id,
-    );
-
-
-    if($found_contact){
-        $contact = $mautic_contact_api->edit($found_contact['id'], $data, false)['contact'];
-        echo "Updating Mautic contact ID {$found_contact['id']}\n";
-
-    }else{
-        echo "Creating new Mautic contact\n";
-        $contact = $mautic_contact_api->create($data)['contact'];
     }
+    $created_companies = $mautic_company_api->createBatch($companies)['companies'];
 
-    if(!$user->is_marketing_allowed){$mautic_contact_api->addDnc($contact['id']);}
-    return $contact;
-}
+    //Unfortunately there doesn't seem to be a way to assign contacts to a company in the batch?
+    foreach($created_companies as $created_company){
 
-
-function handle_freemius_sites($freemius_user_id, $mautic_contact_id){
-    global $freemius_api;
-    global $plugin_id;
-    $offset = 0;
-    do{
-        $query = http_build_query([
-            'offset'    => $offset,
-            'user_id'   => $freemius_user_id,
-            'count'     => 25,
-            'fields'    => 'id,url,title,plan_id,is_active,is_uninstalled,version,programming_language_version,platform_version',
-        ]);
-        $installs = $freemius_api->Api("/plugins/{$plugin_id}/installs.json?{$query}", 'GET');
-
-        foreach($installs->installs as $install){
-            echo "Handling Freemius site install {$install->url}\n";
-            create_or_update_mautic_company($install, $mautic_contact_id);
+        $freemius_user_id = $created_company['fields']['all']['freemius_user_id'];
+        if(isset($config['freemius']['created_contacts'][$freemius_user_id])){
+            $contact_id_by_user_id = $config['freemius']['created_contacts'][$freemius_user_id];
+            $mautic_company_api->addContact($created_company['id'], $contact_id_by_user_id);
+            echo "Adding contact to company {$created_company['fields']['all']['companyname']}\n";
         }
-        $offset = $offset + 25;
-    }while(count($installs->installs) === 25);
-
-}
-
-function create_or_update_mautic_company($install, $mautic_contact_id){
-    global $mautic_company_api;
-    $data = [
-        'companyname'           => $install->title,
-        'companywebsite'        => $install->url,
-        'plan'                  => $install->plan_id,
-        'freemius_install_id'   => $install->id,
-        'install_state'         => ($install->is_active ? 'activated' : ($install->is_uninstalled ? 'uninstalled' : 'unknown')),
-        'plugin_version'        => $install->version,
-        'wordpress_version'     => $install->platform_version,
-        'php_version'           => $install->programming_language_version,
-    ];
-    $existing_company = get_mautic_company_by_freemius_id($install->id);
-    if($existing_company){
-        $company = $mautic_company_api->edit($existing_company['id'], $data, false)['company'];
-        echo $existing_company['id'];
-    }else{
-        $company = $mautic_company_api->create($data)['company'];
     }
-
-    $mautic_company_api->addContact($company['id'], $mautic_contact_id);
+    return $created_companies;
 }
+
+//function create_or_update_mautic_contact($user){
+//    global $mautic_contact_api;
+//    $found_contact = get_mautic_contact_by_freemius_id($user->id);
+//
+//    $data = array(
+//        'email'             => $user->email,
+//        'ipAddress'         => $user->ip,
+//        'firstname'         => $user->first,
+//        'lastname'          => $user->last,
+//        'freemius_id'       => $user->id,
+//    );
+//
+//
+//    if($found_contact){
+//        $contact = $mautic_contact_api->edit($found_contact['id'], $data, false)['contact'];
+//        echo "Updating Mautic contact ID {$found_contact['id']}\n";
+//
+//    }else{
+//        echo "Creating new Mautic contact\n";
+//        $contact = $mautic_contact_api->create($data)['contact'];
+//    }
+//
+//    if(!$user->is_marketing_allowed){$mautic_contact_api->addDnc($contact['id']);}
+//    return $contact;
+//}
+//
+//
+//function handle_freemius_sites($freemius_user_id, $mautic_contact_id){
+//    global $freemius_api;
+//    global $plugin_id;
+//    $offset = 0;
+//    do{
+//        $query = http_build_query([
+//            'offset'    => $offset,
+//            'user_id'   => $freemius_user_id,
+//            'count'     => 25,
+//            'fields'    => 'id,url,title,plan_id,is_active,is_uninstalled,version,programming_language_version,platform_version',
+//        ]);
+//        $installs = $freemius_api->Api("/plugins/{$plugin_id}/installs.json?{$query}", 'GET');
+//
+//        foreach($installs->installs as $install){
+//            echo "Handling Freemius site install {$install->url}\n";
+//            create_or_update_mautic_company($install, $mautic_contact_id);
+//        }
+//        $offset = $offset + 25;
+//    }while(count($installs->installs) === 25);
+//
+//}
+//
+//function create_or_update_mautic_company($install, $mautic_contact_id){
+//    global $mautic_company_api;
+//    $data = [
+//        'companyname'           => $install->title,
+//        'companywebsite'        => $install->url,
+//        'plan'                  => $install->plan_id,
+//        'freemius_install_id'   => $install->id,
+//        'install_state'         => ($install->is_active ? 'activated' : ($install->is_uninstalled ? 'uninstalled' : 'unknown')),
+//        'plugin_version'        => $install->version,
+//        'wordpress_version'     => $install->platform_version,
+//        'php_version'           => $install->programming_language_version,
+//    ];
+//    $existing_company = get_mautic_company_by_freemius_id($install->id);
+//    if($existing_company){
+//        $company = $mautic_company_api->edit($existing_company['id'], $data, false)['company'];
+//        echo $existing_company['id'];
+//    }else{
+//        $company = $mautic_company_api->create($data)['company'];
+//    }
+//
+//    $mautic_company_api->addContact($company['id'], $mautic_contact_id);
+//}
