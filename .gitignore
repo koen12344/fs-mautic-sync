@@ -1,3 +1,4 @@
 /vendor/
 /config.php
 /config.json
+/datastore_cred.json

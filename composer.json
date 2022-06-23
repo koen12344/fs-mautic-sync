@@ -20,7 +20,8 @@
         "mautic/api-library": "^3.0",
         "freemius/php-sdk": "dev-master",
         "symfony/process": "^5.4",
-        "ext-json": "*"
+        "ext-json": "*",
+        "google/cloud-datastore": "^1.14"
     },
     "require-dev": {
         "phpunit/phpunit": "^8"

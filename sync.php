@@ -17,6 +17,7 @@ require_once('shared.php');
 require_once('vendor/freemius/php-sdk/freemius/Freemius.php'); //Autoload doesn't work on the Freemius API?
 
 
+
 $handle = fopen ('php://stdin','r');
 
 $config = [];
@@ -38,6 +39,18 @@ function get_user_confirmation($text){
 if(file_exists('config.json') && get_user_confirmation('Reload previous config?')){
     $config = load_settings();
 }
+
+/**
+ * Connect to Google Datastore
+ */
+$config['datastore']['project_id'] = !empty($config['datastore']['project_id']) ? $config['datastore']['project_id'] : get_user_input('Please enter your Google Cloud Project ID');
+$config['datastore']['keyfile_path'] = !empty($config['datastore']['keyfile_path']) ? $config['datastore']['keyfile_path'] : get_user_input('Copy the credential JSON file into the project folder and enter the filename');
+$datastoreclient = new \Google\Cloud\Datastore\DatastoreClient([
+    'projectId'     => $config['datastore']['project_id'],
+    'keyFilePath'   => $config['datastore']['keyfile_path'],
+]);
+
+$googledatastore = new \FSMauticSync\Storage\GoogleDataStore($datastoreclient);
 
 /**
  * Connect to Freemius
@@ -168,7 +181,6 @@ save_settings($config);
 
 if(get_user_confirmation('Create/sync plugin related custom fields in Mautic?')){
     $mautic_contact_fields_api = $mautic_api->newApi('contactFields', $auth, $config['mautic']['baseUrl']);
-    $mautic_company_fields_api = $mautic_api->newApi('companyFields', $auth, $config['mautic']['baseUrl']);
 
     $contact_fields = [
         [
@@ -190,8 +202,8 @@ if(get_user_confirmation('Create/sync plugin related custom fields in Mautic?'))
             'isShortVisible'        => false,
             'defaultValue'          => 0,
             'properties'            => [
-                'no'    => 'No',
-                'yes'    => 'Yes',
+                'no'        => 'No',
+                'yes'       => 'Yes',
             ]
         ],
         [
@@ -204,227 +216,227 @@ if(get_user_confirmation('Create/sync plugin related custom fields in Mautic?'))
             'isShortVisible'        => false,
             'defaultValue'          => 0,
             'properties'            => [
-                'no'    => 'No',
-                'yes'    => 'Yes',
+                'no'        => 'No',
+                'yes'       => 'Yes',
             ]
         ]
     ];
 
-    $mautic_contact_fields_api->create($contact_fields);
+    print_r($mautic_contact_fields_api->create($contact_fields)); //Doesn't work anymore for some reason
     echo "Created contact fields\n";
 
 
-
-    $plans = $freemius_api->Api("/plugins/{$config['freemius']['plugin_id']}/plans.json");
-    $plans_field_values = [
-        [
-            'label' => 'Unknown',
-            'value' => 'unknown'
-        ]
-    ];
-    foreach($plans->plans as $plan){
-        $plans_field_values[] = [
-            'label'             => $plan->title,
-            'value'             => $plan->id,
-        ];
-    }
-        //print_r($plans);
-    $company_fields = [
-        [
-            'label'                 => 'Freemius Install ID',
-            'alias'                 => 'freemius_install_id',
-            'type'                  => 'number',
-            'isPubliclyUpdatable'   => false,
-            'isUniqueIdentifier'    => true,
-            'isVisible'             => false,
-            'isShortVisible'        => false,
-        ],
-        [
-            'label'                 => 'Freemius User ID',
-            'alias'                 => 'freemius_user_id',
-            'type'                  => 'number',
-            'isPubliclyUpdatable'   => false,
-            'isUniqueIdentifier'    => false,
-            'isVisible'             => false,
-            'isShortVisible'        => false,
-        ],
-        [
-            'label'                 => 'Uninstall reason',
-            'alias'                 => 'uninstall_reason',
-            'type'                  => 'select',
-            'isPubliclyUpdatable'   => false,
-            'isVisible'             => false,
-            'isShortVisible'        => false,
-            'properties'            => [
-                    'list' => [
-                        [
-                        'label'             => 'No longer needed',
-                        'value'             => 1,
-                    ],
-                    [
-                        'label'             => 'Found a better plugin',
-                        'value'             => 2,
-                    ],
-                    [
-                        'label'             => 'Only needed for a short period',
-                        'value'             => 3,
-                    ],
-                    [
-                        'label'             => 'Broke my site',
-                        'value'             => 4,
-                    ],
-                    [
-                        'label'             => 'Suddenly stopped working',
-                        'value'             => 5,
-                    ],
-                    [
-                        'label'             => 'Can\'t pay anymore',
-                        'value'             => 6,
-                    ],
-                    [
-                        'label'             => 'Other',
-                        'value'             => 7,
-                    ],
-                    [
-                        'label'             => 'Didn\'t work',
-                        'value'             => 8,
-                    ],
-                    [
-                        'label'             => 'Doesn\'t like to share information',
-                        'value'             => 9,
-                    ],
-                    [
-                        'label'             => 'Couldn\'t make it work',
-                        'value'             => 10,
-                    ],
-                    [
-                        'label'             => 'Missing specific feature',
-                        'value'             => 11,
-                    ],
-                    [
-                        'label'             => 'Not working',
-                        'value'             => 12,
-                    ],
-                    [
-                        'label'             => 'Not what I was looking for',
-                        'value'             => 13,
-                    ],
-                    [
-                        'label'             => 'Didn\'t work as expected',
-                        'value'             => 14,
-                    ],
-                    [
-                        'label'             => 'Temporary deactivation',
-                        'value'             => 15,
-                    ],
-                        ]
-            ]
-        ],
-        [
-            'label'                 => 'Uninstall reason info',
-            'alias'                 => 'uninstall_reason_info',
-            'type'                  => 'textarea',
-            'isPubliclyUpdatable'   => false,
-            'isUniqueIdentifier'    => false,
-            'isVisible'             => false,
-            'isShortVisible'        => false,
-        ],
-        [
-            'label'                 => 'Install state',
-            'alias'                 => 'install_state',
-            'type'                  => 'select',
-            'isPubliclyUpdatable'   => false,
-            'isUniqueIdentifier'    => false,
-            'isVisible'             => false,
-            'isShortVisible'        => false,
-            'properties'            => [
-                'list'  => [[
-                        'label'             => 'Activated',
-                        'value'             => 'activated',
-                    ],
-                    [
-                        'label'             => 'Deactivated',
-                        'value'             => 'deactivated',
-                    ],
-                    [
-                        'label'             => 'Uninstalled',
-                        'value'             => 'uninstalled',
-                    ],
-                    [
-                        'label'             => 'Unknown',
-                        'value'             => 'unknown',
-                    ],
-                    ]
-            ],
-            'defaultValue'          => 'unknown'
-        ],
-        [
-            'label'                 => 'Plan',
-            'alias'                 => 'plan',
-            'type'                  => 'select',
-            'isPubliclyUpdatable'   => false,
-            'isUniqueIdentifier'    => false,
-            'isVisible'             => false,
-            'isShortVisible'        => false,
-            'properties'            => ['list' => $plans_field_values],
-            'defaultValue'          => 'unknown'
-        ],
-        [
-            'label'                 => 'Trial plan',
-            'alias'                 => 'trial_plan',
-            'type'                  => 'select',
-            'isPubliclyUpdatable'   => false,
-            'isUniqueIdentifier'    => false,
-            'isVisible'             => false,
-            'isShortVisible'        => false,
-            'properties'            => ['list' => $plans_field_values],
-            'defaultValue'          => 'unknown'
-        ],
-        [
-            'label'                 => 'Plugin version',
-            'alias'                 => 'plugin_version',
-            'type'                  => 'text',
-            'isPubliclyUpdatable'   => false,
-            'isUniqueIdentifier'    => false,
-            'isVisible'             => false,
-            'isShortVisible'        => false,
-        ],
-        [
-            'label'                 => 'WordPress version',
-            'alias'                 => 'wordpress_version',
-            'type'                  => 'text',
-            'isPubliclyUpdatable'   => false,
-            'isUniqueIdentifier'    => false,
-            'isVisible'             => false,
-            'isShortVisible'        => false,
-        ],
-        [
-            'label'                 => 'PHP version',
-            'alias'                 => 'php_version',
-            'type'                  => 'text',
-            'isPubliclyUpdatable'   => false,
-            'isUniqueIdentifier'    => false,
-            'isVisible'             => false,
-            'isShortVisible'        => false,
-        ],
-        [
-            'label'                 => 'In trial',
-            'alias'                 => 'in_trial',
-            'type'                  => 'boolean',
-            'isPubliclyUpdatable'   => false,
-            'isUniqueIdentifier'    => false,
-            'isVisible'             => false,
-            'isShortVisible'        => false,
-            'defaultValue'          => 0,
-            'properties'            => [
-                'no'    => 'No',
-                'yes'    => 'Yes',
-            ]
-        ],
-    ];
-
-    $mautic_company_fields_api->createBatch($company_fields);
-    echo "Created company fields\n";
+//
+//    $plans = $freemius_api->Api("/plugins/{$config['freemius']['plugin_id']}/plans.json");
+//    $plans_field_values = [
+//        [
+//            'label' => 'Unknown',
+//            'value' => 'unknown'
+//        ]
+//    ];
+//    foreach($plans->plans as $plan){
+//        $plans_field_values[] = [
+//            'label'             => $plan->title,
+//            'value'             => $plan->id,
+//        ];
+//    }
+//        //print_r($plans);
+//    $company_fields = [
+//        [
+//            'label'                 => 'Freemius Install ID',
+//            'alias'                 => 'freemius_install_id',
+//            'type'                  => 'number',
+//            'isPubliclyUpdatable'   => false,
+//            'isUniqueIdentifier'    => true,
+//            'isVisible'             => false,
+//            'isShortVisible'        => false,
+//        ],
+//        [
+//            'label'                 => 'Freemius User ID',
+//            'alias'                 => 'freemius_user_id',
+//            'type'                  => 'number',
+//            'isPubliclyUpdatable'   => false,
+//            'isUniqueIdentifier'    => false,
+//            'isVisible'             => false,
+//            'isShortVisible'        => false,
+//        ],
+//        [
+//            'label'                 => 'Uninstall reason',
+//            'alias'                 => 'uninstall_reason',
+//            'type'                  => 'select',
+//            'isPubliclyUpdatable'   => false,
+//            'isVisible'             => false,
+//            'isShortVisible'        => false,
+//            'properties'            => [
+//                    'list' => [
+//                        [
+//                        'label'             => 'No longer needed',
+//                        'value'             => 1,
+//                    ],
+//                    [
+//                        'label'             => 'Found a better plugin',
+//                        'value'             => 2,
+//                    ],
+//                    [
+//                        'label'             => 'Only needed for a short period',
+//                        'value'             => 3,
+//                    ],
+//                    [
+//                        'label'             => 'Broke my site',
+//                        'value'             => 4,
+//                    ],
+//                    [
+//                        'label'             => 'Suddenly stopped working',
+//                        'value'             => 5,
+//                    ],
+//                    [
+//                        'label'             => 'Can\'t pay anymore',
+//                        'value'             => 6,
+//                    ],
+//                    [
+//                        'label'             => 'Other',
+//                        'value'             => 7,
+//                    ],
+//                    [
+//                        'label'             => 'Didn\'t work',
+//                        'value'             => 8,
+//                    ],
+//                    [
+//                        'label'             => 'Doesn\'t like to share information',
+//                        'value'             => 9,
+//                    ],
+//                    [
+//                        'label'             => 'Couldn\'t make it work',
+//                        'value'             => 10,
+//                    ],
+//                    [
+//                        'label'             => 'Missing specific feature',
+//                        'value'             => 11,
+//                    ],
+//                    [
+//                        'label'             => 'Not working',
+//                        'value'             => 12,
+//                    ],
+//                    [
+//                        'label'             => 'Not what I was looking for',
+//                        'value'             => 13,
+//                    ],
+//                    [
+//                        'label'             => 'Didn\'t work as expected',
+//                        'value'             => 14,
+//                    ],
+//                    [
+//                        'label'             => 'Temporary deactivation',
+//                        'value'             => 15,
+//                    ],
+//                        ]
+//            ]
+//        ],
+//        [
+//            'label'                 => 'Uninstall reason info',
+//            'alias'                 => 'uninstall_reason_info',
+//            'type'                  => 'textarea',
+//            'isPubliclyUpdatable'   => false,
+//            'isUniqueIdentifier'    => false,
+//            'isVisible'             => false,
+//            'isShortVisible'        => false,
+//        ],
+//        [
+//            'label'                 => 'Install state',
+//            'alias'                 => 'install_state',
+//            'type'                  => 'select',
+//            'isPubliclyUpdatable'   => false,
+//            'isUniqueIdentifier'    => false,
+//            'isVisible'             => false,
+//            'isShortVisible'        => false,
+//            'properties'            => [
+//                'list'  => [[
+//                        'label'             => 'Activated',
+//                        'value'             => 'activated',
+//                    ],
+//                    [
+//                        'label'             => 'Deactivated',
+//                        'value'             => 'deactivated',
+//                    ],
+//                    [
+//                        'label'             => 'Uninstalled',
+//                        'value'             => 'uninstalled',
+//                    ],
+//                    [
+//                        'label'             => 'Unknown',
+//                        'value'             => 'unknown',
+//                    ],
+//                    ]
+//            ],
+//            'defaultValue'          => 'unknown'
+//        ],
+//        [
+//            'label'                 => 'Plan',
+//            'alias'                 => 'plan',
+//            'type'                  => 'select',
+//            'isPubliclyUpdatable'   => false,
+//            'isUniqueIdentifier'    => false,
+//            'isVisible'             => false,
+//            'isShortVisible'        => false,
+//            'properties'            => ['list' => $plans_field_values],
+//            'defaultValue'          => 'unknown'
+//        ],
+//        [
+//            'label'                 => 'Trial plan',
+//            'alias'                 => 'trial_plan',
+//            'type'                  => 'select',
+//            'isPubliclyUpdatable'   => false,
+//            'isUniqueIdentifier'    => false,
+//            'isVisible'             => false,
+//            'isShortVisible'        => false,
+//            'properties'            => ['list' => $plans_field_values],
+//            'defaultValue'          => 'unknown'
+//        ],
+//        [
+//            'label'                 => 'Plugin version',
+//            'alias'                 => 'plugin_version',
+//            'type'                  => 'text',
+//            'isPubliclyUpdatable'   => false,
+//            'isUniqueIdentifier'    => false,
+//            'isVisible'             => false,
+//            'isShortVisible'        => false,
+//        ],
+//        [
+//            'label'                 => 'WordPress version',
+//            'alias'                 => 'wordpress_version',
+//            'type'                  => 'text',
+//            'isPubliclyUpdatable'   => false,
+//            'isUniqueIdentifier'    => false,
+//            'isVisible'             => false,
+//            'isShortVisible'        => false,
+//        ],
+//        [
+//            'label'                 => 'PHP version',
+//            'alias'                 => 'php_version',
+//            'type'                  => 'text',
+//            'isPubliclyUpdatable'   => false,
+//            'isUniqueIdentifier'    => false,
+//            'isVisible'             => false,
+//            'isShortVisible'        => false,
+//        ],
+//        [
+//            'label'                 => 'In trial',
+//            'alias'                 => 'in_trial',
+//            'type'                  => 'boolean',
+//            'isPubliclyUpdatable'   => false,
+//            'isUniqueIdentifier'    => false,
+//            'isVisible'             => false,
+//            'isShortVisible'        => false,
+//            'defaultValue'          => 0,
+//            'properties'            => [
+//                'no'    => 'No',
+//                'yes'    => 'Yes',
+//            ]
+//        ],
+//    ];
+//
+//    $mautic_company_fields_api->createBatch($company_fields);
+//    echo "Created company fields\n";
 }
 
 
@@ -507,6 +519,7 @@ if(get_user_confirmation('Sync users from Freemius to Mautic?')) {
         $plugin_users = $freemius_api->Api("/plugins/{$plugin_id}/users.json?{$query}", 'GET' );
 
         $created_contacts = batch_create_mautic_users($plugin_users->users);
+
         echo sprintf("Added %d contacts\n", count($created_contacts));
 
         foreach($created_contacts as $created_contact){
@@ -521,7 +534,69 @@ if(get_user_confirmation('Sync users from Freemius to Mautic?')) {
 
 }
 
+/*
+ * [customObjects] => Array
+                (
+                    [data] => Array
+                        (
+                            [0] => Array
+                                (
+                                    [id] => 1
+                                    [alias] => installs
+                                    [data] => Array
+                                        (
+                                            [0] => Array
+                                                (
+                                                    [id] => 256
+                                                    [name] => site name
+                                                    [language] =>
+                                                    [category] =>
+                                                    [isPublished] => 1
+                                                    [dateAdded] => 2022-06-13T13:38:01+00:00
+                                                    [dateModified] => 2022-06-13T13:38:01+00:00
+                                                    [createdBy] => 1
+                                                    [modifiedBy] => 1
+                                                    [attributes] => Array
+                                                        (
+                                                            [plugin-version] => 2.3.5
+                                                            [site-url] => http://exampleapi-site.com
+                                                        )
 
+                                                )
+
+                                        )
+
+                                    [meta] => Array
+                                        (
+                                            [sort] => -dateAdded
+                                            [page] => Array
+                                                (
+                                                    [number] => 1
+                                                    [size] => 10
+                                                )
+
+                                        )
+
+                                )
+
+                        )
+
+                    [meta] => Array
+                        (
+                            [sort] => -dateAdded
+                            [page] => Array
+                                (
+                                    [number] => 1
+                                    [size] => 10
+                                )
+
+                        )
+
+                )
+
+        )
+
+ */
 
 function batch_create_mautic_users($users){
     global $mautic_contact_api;
@@ -568,17 +643,96 @@ do{
     ]);
     $installs = $freemius_api->Api("/plugins/{$plugin_id}/installs.json?{$query}", 'GET');
     if(!isset($installs->installs) || !$installs->installs){
-        printf($installs);
+        echo "Could not fetch installs from API:\n";
+        print_r($installs);
         exit;
     }
-    $created_companies = batch_create_mautic_companies($installs->installs);
-    echo sprintf("Added %d companies\n", count($created_companies));
+
+    batch_create_mautic_items($installs->installs);
+    echo sprintf("Added  companies\n");
 
     $offset = $offset + 50;
     $config['freemius']['install_offset'] = $offset;
     save_settings($config);
 }while(count($installs->installs) === 50);
 
+
+function batch_create_mautic_items($installs){
+    global $config, $mautic_contact_api, $googledatastore;
+
+    foreach($installs as $install){
+        if(!isset($config['freemius']['created_contacts'][$install->user_id])){ continue; }
+        $mautic_id = $config['freemius']['created_contacts'][$install->user_id];
+
+        $id_exists = $googledatastore->get_mautic_id_by_freemius_id($install->id);
+
+        $contact = [
+            'includeCustomObjects' => true,
+            'customObjects'     => [
+                'data'      => [
+                    [
+                        'alias' => 'installs',
+                        'data'  => [
+                            [
+                                'id' => $id_exists ?: null,
+                                'name'  => $install->title,
+                                'attributes' => [
+                                    'pluginversion'        => $install->version,
+                                    'siteurl'              => $install->url,
+                                    'plan'                  => $install->plan_id,
+                                    'freemiusinstallid'   => $install->id,
+                                    'installstate'         => ($install->is_active ? 'activated' : ($install->is_uninstalled ? 'uninstalled' : 'unknown')),
+                                    'wordpressversion'     => $install->platform_version,
+                                    'phpversion'           => $install->programming_language_version,
+                                    'freemiususerid'      => $install->user_id,
+                                ]
+                            ]
+                        ]
+                    ],
+                ]
+            ]
+        ];
+
+        $response = $mautic_contact_api->edit($mautic_id, $contact, false);
+
+        if(!isset($response['contact']['customObjects']['data']) || empty($response['contact']['customObjects']['data'])){
+            echo sprintf("Could not find/create custom objects for contact - Freemius user ID %d, - Install ID %d\n", $install->user_id, $install->id);
+            continue;
+        }
+
+        $all_objects = $response['contact']['customObjects']['data'];
+
+        $custom_object_id = array_search('installs', array_column($all_objects, 'alias'));
+        if($custom_object_id === false){
+            echo "Installs custom object not found for contact\n";
+            continue;
+        }
+
+        if(!isset($all_objects[$custom_object_id]['data']) || empty($all_objects[$custom_object_id]['data'])){
+            echo "No installs found for contact\n";
+            continue;
+        }
+
+        $all_items = $all_objects[$custom_object_id]['data'];
+
+        foreach($all_items as $item){
+            if($id_exists || (int)$item['attributes']['freemiusinstallid'] != (int)$install->id){ continue; }
+            try{
+                $googledatastore->store_id_match($install->id, $item['id']);
+            }catch(\Google\Cloud\Core\Exception\ConflictException $exception){
+                echo (int)$item['attributes']['freemiusinstallid']."\n";
+                echo (int)$install->id."\n";
+
+                echo "ID already stored in DB\n";
+                die();
+            }
+
+        }
+
+        echo sprintf("Added/updated site/install %s\n", $install->url);
+
+    }
+}
 
 function batch_create_mautic_companies($installs){
     global $mautic_company_api, $config;
@@ -599,7 +753,6 @@ function batch_create_mautic_companies($installs){
     }
     $created_companies = $mautic_company_api->createBatch($companies)['companies'];
 
-    //Unfortunately there doesn't seem to be a way to assign contacts to a company in the batch?
     foreach($created_companies as $created_company){
 
         $freemius_user_id = $created_company['fields']['all']['freemius_user_id'];
@@ -611,75 +764,3 @@ function batch_create_mautic_companies($installs){
     }
     return $created_companies;
 }
-
-//function create_or_update_mautic_contact($user){
-//    global $mautic_contact_api;
-//    $found_contact = get_mautic_contact_by_freemius_id($user->id);
-//
-//    $data = array(
-//        'email'             => $user->email,
-//        'ipAddress'         => $user->ip,
-//        'firstname'         => $user->first,
-//        'lastname'          => $user->last,
-//        'freemius_id'       => $user->id,
-//    );
-//
-//
-//    if($found_contact){
-//        $contact = $mautic_contact_api->edit($found_contact['id'], $data, false)['contact'];
-//        echo "Updating Mautic contact ID {$found_contact['id']}\n";
-//
-//    }else{
-//        echo "Creating new Mautic contact\n";
-//        $contact = $mautic_contact_api->create($data)['contact'];
-//    }
-//
-//    if(!$user->is_marketing_allowed){$mautic_contact_api->addDnc($contact['id']);}
-//    return $contact;
-//}
-//
-//
-//function handle_freemius_sites($freemius_user_id, $mautic_contact_id){
-//    global $freemius_api;
-//    global $plugin_id;
-//    $offset = 0;
-//    do{
-//        $query = http_build_query([
-//            'offset'    => $offset,
-//            'user_id'   => $freemius_user_id,
-//            'count'     => 25,
-//            'fields'    => 'id,url,title,plan_id,is_active,is_uninstalled,version,programming_language_version,platform_version',
-//        ]);
-//        $installs = $freemius_api->Api("/plugins/{$plugin_id}/installs.json?{$query}", 'GET');
-//
-//        foreach($installs->installs as $install){
-//            echo "Handling Freemius site install {$install->url}\n";
-//            create_or_update_mautic_company($install, $mautic_contact_id);
-//        }
-//        $offset = $offset + 25;
-//    }while(count($installs->installs) === 25);
-//
-//}
-//
-//function create_or_update_mautic_company($install, $mautic_contact_id){
-//    global $mautic_company_api;
-//    $data = [
-//        'companyname'           => $install->title,
-//        'companywebsite'        => $install->url,
-//        'plan'                  => $install->plan_id,
-//        'freemius_install_id'   => $install->id,
-//        'install_state'         => ($install->is_active ? 'activated' : ($install->is_uninstalled ? 'uninstalled' : 'unknown')),
-//        'plugin_version'        => $install->version,
-//        'wordpress_version'     => $install->platform_version,
-//        'php_version'           => $install->programming_language_version,
-//    ];
-//    $existing_company = get_mautic_company_by_freemius_id($install->id);
-//    if($existing_company){
-//        $company = $mautic_company_api->edit($existing_company['id'], $data, false)['company'];
-//        echo $existing_company['id'];
-//    }else{
-//        $company = $mautic_company_api->create($data)['company'];
-//    }
-//
-//    $mautic_company_api->addContact($company['id'], $mautic_contact_id);
-//}
