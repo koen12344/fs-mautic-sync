@@ -639,7 +639,8 @@ do{
     $query = http_build_query([
         'offset' => $offset,
         'count' => 50,
-        'fields' =>  'id,user_id,url,title,plan_id,is_active,is_uninstalled,version,programming_language_version,platform_version',
+        'fields' =>  'id,user_id,url,title,plan_id,is_active,is_uninstalled,version,programming_language_version,platform_version,created',
+//        'filter' => 'uninstalled'
     ]);
     $installs = $freemius_api->Api("/plugins/{$plugin_id}/installs.json?{$query}", 'GET');
     if(!isset($installs->installs) || !$installs->installs){
@@ -649,7 +650,7 @@ do{
     }
 
     batch_create_mautic_items($installs->installs);
-    echo sprintf("Added  companies\n");
+    echo sprintf("Added %d companies\n", count($installs->installs));
 
     $offset = $offset + 50;
     $config['freemius']['install_offset'] = $offset;
@@ -661,10 +662,14 @@ function batch_create_mautic_items($installs){
     global $config, $mautic_contact_api, $googledatastore;
 
     foreach($installs as $install){
-        if(!isset($config['freemius']['created_contacts'][$install->user_id])){ continue; }
-        $mautic_id = $config['freemius']['created_contacts'][$install->user_id];
+        //if(!isset($config['freemius']['created_contacts'][$install->user_id])){ continue; }
+        $mautic_id = isset($config['freemius']['created_contacts'][$install->user_id]) ? $config['freemius']['created_contacts'][$install->user_id] : get_mautic_contact_by_freemius_id($install->user_id)['id'];
+
+
+        if(!$mautic_id || !isset($install->id)){ continue; }
 
         $id_exists = $googledatastore->get_mautic_id_by_freemius_id($install->id);
+
 
         $contact = [
             'includeCustomObjects' => true,
@@ -685,6 +690,10 @@ function batch_create_mautic_items($installs){
                                     'wordpressversion'     => $install->platform_version,
                                     'phpversion'           => $install->programming_language_version,
                                     'freemiususerid'      => $install->user_id,
+                                    'install-date'          => $install->created,
+                                    'uninstall-date'        => $install->is_uninstalled ? $install->uninstalled_at : null,
+                                    'uninstallreasoninfo'   => $install->is_uninstalled ? $install->reason_info : null,
+                                    'uninstallreason'       => $install->is_uninstalled ? $install->reason_id : null,
                                 ]
                             ]
                         ]
@@ -733,6 +742,8 @@ function batch_create_mautic_items($installs){
 
     }
 }
+
+
 
 function batch_create_mautic_companies($installs){
     global $mautic_company_api, $config;
