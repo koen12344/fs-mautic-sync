@@ -89,7 +89,8 @@ foreach($freemius_plugins->plugins as $plugin) {
     $valid_choices[] = (int)$plugin->id;
 }
 do{
-    $plugin_id = $config['freemius']['plugin_id'] = !empty($config['freemius']['plugin_id']) ? $config['freemius']['plugin_id'] : (int)get_user_input("Plugin to sync contacts for:\n{$options}");
+//    $plugin_id = $config['freemius']['plugin_id'] = !empty($config['freemius']['plugin_id']) ? $config['freemius']['plugin_id'] : (int)get_user_input("Plugin to sync contacts for:\n{$options}");
+    $plugin_id = $config['freemius']['plugin_id'] = (int)get_user_input("Plugin to sync contacts for:\n{$options}");
     if(!in_array($plugin_id, $valid_choices)){
         $plugin_id = false;
         echo "Invalid plugin ID\n";
@@ -131,6 +132,10 @@ do{
         //Start the PHP http server to handle the incoming authentication
         $process = new Process(['php', '-S', 'localhost:8123', 'callback.php']);
         $process->start();
+    }catch(\Mautic\Exception\UnexpectedResponseFormatException $e){
+        unset($config['mautic']['accessToken'], $config['mautic']['accessTokenExpires'], $config['mautic']['refreshToken']);
+        echo "Refresh token expired, restarting auth\n";
+        continue;
     }
     echo "Waiting for authorization...\n";
 
@@ -144,7 +149,6 @@ do{
         $config = load_settings();
         if(!empty($config['mautic']['accessToken'])){
             $auth = $initAuth->newAuth($config['mautic']);
-            $auth->validateAccessToken();
             $process->stop();
             $requires_auth = false;
             break;
@@ -152,14 +156,28 @@ do{
         sleep(1);
     }
 
-    if ($auth->accessTokenUpdated()) {
-        $new_token = $auth->getAccessTokenData();
-        $normalize = [
-            'accessToken'           => $new_token['access_token'],
-            'accessTokenExpires'    => $new_token['expires'],
-            'refreshToken'          => $new_token['refresh_token'],
-        ];
-        $config['mautic'] = array_merge($config['mautic'], $normalize);
+    function update_mautic_access_token(){
+        global $config, $auth;
+        if($auth->validateAccessToken()){
+            if ($auth->accessTokenUpdated()) {
+                $new_token = $auth->getAccessTokenData();
+                $normalize = [
+                    'accessToken'           => $new_token['access_token'],
+                    'accessTokenExpires'    => $new_token['expires'],
+                    'refreshToken'          => $new_token['refresh_token'],
+                ];
+                $config['mautic'] = array_merge($config['mautic'], $normalize);
+            }
+        }
+    }
+    update_mautic_access_token();
+
+
+    function should_update_mautic_token(){
+        global $config;
+        if(time() >= $config['mautic']['accessTokenExpires']){
+            update_mautic_access_token();
+        }
     }
 
     $mautic_api = new MauticApi();
@@ -621,128 +639,325 @@ function batch_create_mautic_users($users){
     return $mautic_contact_api->createBatch($contacts)['contacts'];
 }
 
-if(!get_user_confirmation('Sync sites/installs from Freemius to Mautic?')) {
- exit;
+if(get_user_confirmation('Sync sites/installs from Freemius to Mautic?')) {
+    /**
+     * Loop through all Freemius installs
+     */
+    $offset = 0;
+    if (!empty($config['freemius']['install_offset'])) {
+        $saved_offset = (int)$config['freemius']['install_offset'];
+        if (get_user_confirmation("Continue syncing installs from previous offset? ({$saved_offset})")) {
+            $offset = $saved_offset;
+        }
+    }
+    do {
+        $query = http_build_query([
+            'offset' => $offset,
+            'count' => 50,
+//            'fields' => 'id,user_id,url,title,plan_id,is_active,is_uninstalled,version,programming_language_version,platform_version,created',
+//        'filter' => 'uninstalled'
+        ]);
+        $installs = $freemius_api->Api("/plugins/{$plugin_id}/installs.json?{$query}", 'GET');
+        if (!isset($installs->installs) || !$installs->installs) {
+            echo "Could not fetch installs from API:\n";
+            print_r($installs);
+            exit;
+        }
+
+        batch_create_mautic_items($installs->installs, 'installs');
+        echo sprintf("Added %d companies\n", count($installs->installs));
+
+        $offset = $offset + 50;
+        $config['freemius']['install_offset'] = $offset;
+        save_settings($config);
+    } while (count($installs->installs) === 50);
 }
 
-/**
- * Loop through all Freemius installs
- */
-$offset = 0;
-if(!empty($config['freemius']['install_offset'])){
-    $saved_offset = (int)$config['freemius']['install_offset'];
-    if(get_user_confirmation("Continue syncing installs from previous offset? ({$saved_offset})")){
-        $offset = $saved_offset;
-    }
-}
-do{
+function get_uninstall_reason($install_id){
+    global $freemius_api, $plugin_id;
     $query = http_build_query([
-        'offset' => $offset,
-        'count' => 50,
-        'fields' =>  'id,user_id,url,title,plan_id,is_active,is_uninstalled,version,programming_language_version,platform_version,created',
+        'fields' =>  'reason_id,reason_info,created',
 //        'filter' => 'uninstalled'
     ]);
-    $installs = $freemius_api->Api("/plugins/{$plugin_id}/installs.json?{$query}", 'GET');
-    if(!isset($installs->installs) || !$installs->installs){
-        echo "Could not fetch installs from API:\n";
-        print_r($installs);
-        exit;
-    }
+    return $freemius_api->Api("/plugins/{$plugin_id}/installs/{$install_id}/uninstall.json?{$query}", 'GET');
+}
 
-    batch_create_mautic_items($installs->installs);
-    echo sprintf("Added %d companies\n", count($installs->installs));
-
-    $offset = $offset + 50;
-    $config['freemius']['install_offset'] = $offset;
-    save_settings($config);
-}while(count($installs->installs) === 50);
-
-
-function batch_create_mautic_items($installs){
+function batch_create_mautic_items($items, $type){
     global $config, $mautic_contact_api, $googledatastore;
 
-    foreach($installs as $install){
+
+
+    foreach($items as $item){
+        should_update_mautic_token();
         //if(!isset($config['freemius']['created_contacts'][$install->user_id])){ continue; }
-        $mautic_id = isset($config['freemius']['created_contacts'][$install->user_id]) ? $config['freemius']['created_contacts'][$install->user_id] : get_mautic_contact_by_freemius_id($install->user_id)['id'];
+        $mautic_id = isset($config['freemius']['created_contacts'][$item->user_id]) ? $config['freemius']['created_contacts'][$item->user_id] : get_mautic_contact_by_freemius_id($item->user_id)['id'];
 
 
-        if(!$mautic_id || !isset($install->id)){ continue; }
+        if(!$mautic_id || !isset($item->id)){ continue; }
 
-        $id_exists = $googledatastore->get_mautic_id_by_freemius_id($install->id);
+        $id_exists = $googledatastore->get_mautic_id_by_freemius_id($item->id, $type);
 
-
-        $contact = [
-            'includeCustomObjects' => true,
-            'customObjects'     => [
-                'data'      => [
-                    [
-                        'alias' => 'installs',
-                        'data'  => [
-                            [
-                                'id' => $id_exists ?: null,
-                                'name'  => $install->title,
-                                'attributes' => [
-                                    'pluginversion'        => $install->version,
-                                    'siteurl'              => $install->url,
-                                    'plan'                  => $install->plan_id,
-                                    'freemiusinstallid'   => $install->id,
-                                    'installstate'         => ($install->is_active ? 'activated' : ($install->is_uninstalled ? 'uninstalled' : 'unknown')),
-                                    'wordpressversion'     => $install->platform_version,
-                                    'phpversion'           => $install->programming_language_version,
-                                    'freemiususerid'      => $install->user_id,
-                                    'install-date'          => $install->created,
-                                    'uninstall-date'        => $install->is_uninstalled ? $install->uninstalled_at : null,
-                                    'uninstallreasoninfo'   => $install->is_uninstalled ? $install->reason_info : null,
-                                    'uninstallreason'       => $install->is_uninstalled ? $install->reason_id : null,
-                                ]
-                            ]
-                        ]
-                    ],
-                ]
-            ]
-        ];
+        if($type == 'installs') {
+            $contact = get_install_contact_data($id_exists, $item);
+            $mautic_id_field = 'freemiusinstallid';
+        }elseif($type == 'subscriptions'){
+            $contact = get_subscription_contact_data($id_exists, $item);
+            $mautic_id_field = 'freemius-subscription-id';
+        }else{
+            $contact = get_license_contact_data($id_exists, $item);
+            $mautic_id_field = 'freemius-license-id';
+        }
 
         $response = $mautic_contact_api->edit($mautic_id, $contact, false);
 
-        if(!isset($response['contact']['customObjects']['data']) || empty($response['contact']['customObjects']['data'])){
-            echo sprintf("Could not find/create custom objects for contact - Freemius user ID %d, - Install ID %d\n", $install->user_id, $install->id);
+        if(empty($response['contact']['customObjects']['data'])){
+            echo sprintf("Could not find/create custom objects for contact - Freemius user ID %d, - %s, ID %d\n", $item->user_id, $type, $item->id);
             continue;
         }
 
         $all_objects = $response['contact']['customObjects']['data'];
 
-        $custom_object_id = array_search('installs', array_column($all_objects, 'alias'));
+        $custom_object_id = array_search($type, array_column($all_objects, 'alias'));
         if($custom_object_id === false){
-            echo "Installs custom object not found for contact\n";
+            echo $type." custom object not found for contact\n";
             continue;
         }
 
-        if(!isset($all_objects[$custom_object_id]['data']) || empty($all_objects[$custom_object_id]['data'])){
-            echo "No installs found for contact\n";
+        if(empty($all_objects[$custom_object_id]['data'])){
+            echo "No ".$type." found for contact\n";
             continue;
         }
 
-        $all_items = $all_objects[$custom_object_id]['data'];
+        $mautic_objects = $all_objects[$custom_object_id]['data'];
 
-        foreach($all_items as $item){
-            if($id_exists || (int)$item['attributes']['freemiusinstallid'] != (int)$install->id){ continue; }
+        foreach($mautic_objects as $mautic_object){
+            if($id_exists || (int)$mautic_object['attributes'][$mautic_id_field] != (int)$item->id){ continue; }
             try{
-                $googledatastore->store_id_match($install->id, $item['id']);
+                $googledatastore->store_id_match($item->id, $mautic_object['id'], $type);
             }catch(\Google\Cloud\Core\Exception\ConflictException $exception){
-                echo (int)$item['attributes']['freemiusinstallid']."\n";
-                echo (int)$install->id."\n";
+                echo (int)$mautic_object['attributes'][$mautic_id_field]."\n";
+                echo (int)$item->id."\n";
 
                 echo "ID already stored in DB\n";
-                die();
+                continue;
             }
 
         }
 
-        echo sprintf("Added/updated site/install %s\n", $install->url);
+        echo sprintf("Added/updated $type %s\n", $item->id);
 
     }
 }
 
+function get_install_contact_data($contact_id, $item){
+    global $plugin_id;
+    $uninstall = false;
+    if($item->is_uninstalled){
+        $uninstall = get_uninstall_reason($item->id);
+    }
+    return [
+        'includeCustomObjects' => true,
+        'customObjects'     => [
+            'data'      => [
+                [
+                    'alias' => 'installs',
+                    'data'  => [
+                        [
+                            'id' => $contact_id ?: null,
+                            'name'  => $item->title,
+                            'attributes' => [
+                                'plugin1'              => $plugin_id,
+                                'pluginversion'        => $item->version,
+                                'siteurl'              => $item->url,
+                                'plan'                  => $item->plan_id,
+                                'freemiusinstallid'   => $item->id,
+                                'installstate'         => ($item->is_active ? 'activated' : ($item->is_uninstalled ? 'uninstalled' : 'unknown')),
+                                'wordpressversion'     => $item->platform_version,
+                                'phpversion'           => $item->programming_language_version,
+                                'freemiususerid'      => $item->user_id,
+                                'install-date'          => $item->created,
+                                'uninstall-date'        => $uninstall && !empty($uninstall->created) ? $uninstall->created : null,
+                                'uninstallreasoninfo'   => $uninstall && !empty($uninstall->reason_info) ? $uninstall->reason_info : null,
+                                'uninstallreason'       => $uninstall && !empty($uninstall->reason_id) ? $uninstall->reason_id : null,
+                            ]
+                        ]
+                    ]
+                ],
+            ]
+        ]
+    ];
+}
+
+function get_license_contact_data($contact_id, $item){
+    global $plugin_id;
+    $expired = false;
+    if(!empty($item->expiration)){
+        $expired_datetime = new DateTime($item->expiration);
+        if(time() >= $expired_datetime->getTimestamp()){
+            $expired = true;
+        }
+    }
+
+
+    return [
+        'has_premium'   => !$expired,
+        'includeCustomObjects' => true,
+        'customObjects'     => [
+            'data'      => [
+                [
+                    'alias' => 'licenses',
+                    'data'  => [
+                        [
+                            'id' => $contact_id ?: null,
+                            'name'  => $item->id,
+                            'attributes' => [
+                                'plugin12'              => $plugin_id,
+                                'created'               => $item->created,
+                                'updated'               => $item->updated,
+                                'expiration'            => $item->expiration,
+                                'plan1'                  => $item->plan_id,
+                                'freemius-license-id'   => $item->id,
+                                'is-lifetime'           => !$item->expiration ? 'yes' : 'no',
+                                'quota'                 => $item->quota,
+                            ]
+                        ]
+                    ]
+                ],
+            ]
+        ]
+    ];
+}
+
+function get_subscription_contact_data($contact_id, $item){
+    global $plugin_id;
+    /*
+     * stdClass Object
+(
+    [total_gross] => 29.99
+    [amount_per_cycle] => 29.99
+    [initial_amount] => 29.99
+    [renewal_amount] => 29.99
+    [renewals_discount] =>
+    [renewals_discount_type] => percentage
+    [billing_cycle] => 1
+    [outstanding_balance] => 0
+    [failed_payments] => 0
+    [trial_ends] => 2022-04-05 17:13:43
+    [next_payment] => 2022-05-04 17:13:43
+    [canceled_at] => 2022-04-05 18:50:17
+    [user_id] => 4675443
+    [install_id] => 9286297
+    [plan_id] => 2735
+    [pricing_id] => 2288
+    [license_id] => 910102
+    [ip] => 24.250.202.146
+    [country_code] => us
+    [vat_id] =>
+    [coupon_id] =>
+    [user_card_id] => 247139
+    [source] => 0
+    [plugin_id] => 1828
+    [external_id] => sub_1KiM8RFmXz63vF5vPmfXzDgy
+    [gateway] => stripe
+    [environment] => 0
+    [id] => 278337
+    [created] => 2022-03-28 17:13:45
+    [updated] => 2022-04-05 18:50:17
+    [currency] => usd
+)
+
+     */
+    return [
+//        'has_active_subscription'   => !$expired,
+        'includeCustomObjects' => true,
+        'customObjects'     => [
+            'data'      => [
+                [
+                    'alias' => 'subscriptions',
+                    'data'  => [
+                        [
+                            'id' => $contact_id ?: null,
+                            'name'  => $item->id,
+                            'attributes' => [
+                                'plugin123'                 => $plugin_id,
+                                'created1'               => $item->created,
+                                'updated1'               => $item->updated,
+                                'next-payment'          => $item->next_payment,
+                                'billing-cycle'          => $item->billing_cycle,
+                                'total-gross'           => $item->total_gross,
+                                'amount-per-cycle'           => $item->amount_per_cycle,
+                                'freemius-subscription-id'  => $item->id,
+                                'freemius-user-id'      => $item->user_id,
+                                'canceled-at'           => !empty($item->canceled_at)? $item->canceled_at : null,
+                                'cancelled'             => !empty($item->canceled_at) ? 'yes' : 'no',
+                            ]
+                        ]
+                    ]
+                ],
+            ]
+        ]
+    ];
+}
+
+if(get_user_confirmation('Sync licenses from Freemius to Mautic?')) {
+    $offset = 0;
+    if (!empty($config['freemius']['license_offset'])) {
+        $saved_offset = (int)$config['freemius']['license_offset'];
+        if (get_user_confirmation("Continue syncing licenses from previous offset? ({$saved_offset})")) {
+            $offset = $saved_offset;
+        }
+    }
+    do {
+        $query = http_build_query([
+            'offset' => $offset,
+            'count' => 50,
+//            'fields' => 'id,user_id,url,title,plan_id,is_active,is_uninstalled,version,programming_language_version,platform_version,created',
+        ]);
+        $licenses = $freemius_api->Api("/plugins/{$plugin_id}/licenses.json?{$query}", 'GET');
+        if (!isset($licenses->licenses) || !$licenses->licenses) {
+            echo "Could not fetch licenes from API:\n";
+            print_r($licenses);
+            exit;
+        }
+
+        batch_create_mautic_items($licenses->licenses, 'licenses');
+        echo sprintf("Added %d licenses\n", count($licenses->licenses));
+
+        $offset = $offset + 50;
+        $config['freemius']['license_offset'] = $offset;
+        save_settings($config);
+    } while (count($licenses->licenses) === 50);
+}
+
+if(get_user_confirmation('Sync subscriptions from Freemius to Mautic?')){
+    $offset = 0;
+    if (!empty($config['freemius']['subscription_offset'])) {
+        $saved_offset = (int)$config['freemius']['subscription_offset'];
+        if (get_user_confirmation("Continue syncing subscriptions from previous offset? ({$saved_offset})")) {
+            $offset = $saved_offset;
+        }
+    }
+    do {
+        $query = http_build_query([
+            'offset' => $offset,
+            'count' => 50,
+//            'fields' => 'id,user_id,url,title,plan_id,is_active,is_uninstalled,version,programming_language_version,platform_version,created',
+        ]);
+        $subscriptions = $freemius_api->Api("/plugins/{$plugin_id}/subscriptions.json?{$query}", 'GET');
+        if (!isset($subscriptions->subscriptions) || !$subscriptions->subscriptions) {
+            echo "Could not fetch subscriptions from API:\n";
+            print_r($subscriptions);
+            exit;
+        }
+
+        batch_create_mautic_items($subscriptions->subscriptions, 'subscriptions');
+        echo sprintf("Added %d subscriptions\n", count($subscriptions->subscriptions));
+
+        $offset = $offset + 50;
+        $config['freemius']['subscription_offset'] = $offset;
+        save_settings($config);
+    } while (count($subscriptions->subscriptions) === 50);
+}
 
 
 function batch_create_mautic_companies($installs){
